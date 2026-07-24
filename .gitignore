@@ -1,0 +1,8 @@
+# The web app is built by CI (see .github/workflows/deploy.yml) from Kristal's
+# source; it is not committed. Build locally with build/build_web.sh.
+/public/
+# CI checkout of the Kristal engine
+/kristal/
+# local build scratch
+/build-*/
+*.love

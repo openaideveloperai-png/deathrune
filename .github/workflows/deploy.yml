@@ -1,0 +1,66 @@
+name: Build & Deploy Kristal (web) to GitHub Pages
+
+# Builds Kristal for the web with love.js (see build/build_web.sh) and deploys
+# the result to GitHub Pages. Kristal is pinned to a known-good commit so the
+# web-compatibility patches always apply cleanly.
+
+on:
+  push:
+    branches:
+      - main
+      - claude/kristal-setup-github-pages-ucijqd
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  KRISTAL_REPO: https://github.com/KristalTeam/Kristal.git
+  # Pinned so patch_kristal.py's targeted rewrites always match.
+  KRISTAL_REF: 0ffe43688837f6b67fb40ce907c77c774a192d4a
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Ensure zip is available
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Clone Kristal (pinned commit)
+        run: |
+          git clone --filter=blob:none "$KRISTAL_REPO" kristal
+          git -C kristal checkout "$KRISTAL_REF"
+
+      - name: Build the web app
+        run: ./build/build_web.sh kristal public
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
