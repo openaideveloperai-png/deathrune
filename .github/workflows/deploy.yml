@@ -3,6 +3,10 @@ name: Build & Deploy Kristal (web) to GitHub Pages
 # Builds Kristal for the web with love.js (see build/build_web.sh) and deploys
 # the result to GitHub Pages. Kristal is pinned to a known-good commit so the
 # web-compatibility patches always apply cleanly.
+#
+# Split into build + deploy jobs (GitHub's recommended pattern): the build job
+# has no environment gate, so `configure-pages` can enable Pages on the very
+# first run; the deploy job then publishes the uploaded artifact.
 
 on:
   push:
@@ -26,11 +30,8 @@ env:
   KRISTAL_REF: 0ffe43688837f6b67fb40ce907c77c774a192d4a
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v4
@@ -61,6 +62,13 @@ jobs:
         with:
           path: public
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
