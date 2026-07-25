@@ -24,6 +24,24 @@ you get the full main menu, playable with the keyboard.
 Controls: **arrow keys** to move, **Z / Enter** to confirm, **X / Shift** to
 cancel, **C / Ctrl** for the menu.
 
+## 🌐 Multiplayer
+
+The web build now has **online co-op**: pick **Play Online** on the main menu,
+choose a username and SOUL color, then **host** a room (you get a 4-letter
+code) or **join** with a friend's code. Rooms run over **Supabase Realtime**
+(hosted WebSockets) -- nobody needs to host or install anything.
+
+- Player 1 (the host) is always **Kris**; joiners become **Susie, Ralsei,
+  Noelle**, then that trio repeats. Only the host can be Kris.
+- Every player walks around as **their own character** -- nobody trails behind
+  Kris. Other players appear live with their username above their head in
+  their chosen soul color.
+- In the dark-world **C menu** there's a new **PARTY** button showing the room
+  code (share it to invite people) and everyone connected.
+- Multiplayer **battles** (turn order per player, one soul per player in the
+  bullet phase, host-authoritative attacks) are the next stage and not yet
+  synced -- battles currently run locally per player.
+
 ## What's in here
 
 ```

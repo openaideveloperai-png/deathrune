@@ -9,6 +9,9 @@
 -- absolutely nothing -- every desktop code path is left exactly as upstream.
 -- The shims below only activate in the browser build.
 
+-- Mark this as the web build so web-only systems (multiplayer) can gate on it.
+WEB = true
+
 -- If LuaJIT's FFI is present we are on desktop: leave everything untouched.
 if pcall(require, "ffi") then
     return

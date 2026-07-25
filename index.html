@@ -9,6 +9,8 @@
     <!-- Load custom style sheet -->
     <script src="coi-serviceworker.js"></script>
 
+    <script src="supabase.js"></script>
+    <script src="knet.js"></script>
     <link rel="stylesheet" type="text/css" href="theme/love.css">
   </head>
   <body>
@@ -92,6 +94,11 @@
         }
       };
       Module.setStatus('Downloading...');
+      Module.print = function(text) {
+        if (window.KNET && KNET.fromLua(text)) return;
+        console.log(text);
+      };
+
       window.onerror = function(event) {
         // TODO: do not warn on ok events like simulating an infinite loop or exitStatus
         Module.setStatus('Exception thrown, see JavaScript console');

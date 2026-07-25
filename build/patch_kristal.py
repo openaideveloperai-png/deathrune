@@ -117,11 +117,32 @@ def patch_threads(kristal_dir):
         results.append(f"{os.path.basename(path)}: demand() -> polling pop()")
     return results
 
+
+def install_multiplayer(kristal_dir, weblua_dir):
+    dst = os.path.join(kristal_dir, "src", "web")
+    os.makedirs(dst, exist_ok=True)
+    for f in os.listdir(weblua_dir):
+        if f.endswith(".lua"):
+            shutil.copyfile(os.path.join(weblua_dir, f), os.path.join(dst, f))
+    main = os.path.join(kristal_dir, "main.lua")
+    text = open(main, encoding="utf-8").read()
+    if 'require("src.web.multiplayer")' not in text:
+        anchor = "function love.run()"
+        assert anchor in text
+        text = text.replace(anchor,
+            '-- Web multiplayer (no-op unless running in the browser build)\n'
+            'require("src.web.multiplayer")\n\n' + anchor, 1)
+        open(main, "w", encoding="utf-8").write(text)
+    return "installed src/web multiplayer modules + main.lua require"
+
 def main():
     kristal_dir = sys.argv[1]
     webcompat_src = sys.argv[2]
     print(install_webcompat(kristal_dir, webcompat_src))
     print(patch_main(kristal_dir))
+    weblua = os.path.join(os.path.dirname(os.path.abspath(webcompat_src)), "weblua")
+    if os.path.isdir(weblua):
+        print(install_multiplayer(kristal_dir, weblua))
     for r in patch_threads(kristal_dir):
         print("  " + r)
     for root, _, files in os.walk(os.path.join(kristal_dir, "src")):
