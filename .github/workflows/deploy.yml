@@ -8,11 +8,13 @@ name: Build & Deploy Kristal (web) to GitHub Pages
 # has no environment gate, so `configure-pages` can enable Pages on the very
 # first run; the deploy job then publishes the uploaded artifact.
 
+# NOTE: The live site is currently served by branch-based GitHub Pages
+# (Settings -> Pages -> Deploy from a branch), which serves the pre-built site
+# committed at the repo root -- no Actions run required. This workflow is kept
+# for reproducibility and as an alternative "GitHub Actions" Pages source; it is
+# manual-only so it doesn't run (and fail) on every push. Trigger it from the
+# Actions tab once GitHub Pages is set to the "GitHub Actions" source.
 on:
-  push:
-    branches:
-      - main
-      - claude/kristal-setup-github-pages-ucijqd
   workflow_dispatch:
 
 permissions:
