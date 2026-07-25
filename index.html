@@ -108,6 +108,13 @@
       };
 
       var applicationLoad = function(e) {
+        if (!window.crossOriginIsolated && 'serviceWorker' in navigator) {
+          // First-ever visit: coi-serviceworker is registering and is about to
+          // reload the page with cross-origin isolation enabled. Starting the
+          // engine now would throw "SharedArrayBuffer is not defined".
+          drawLoadingText('Preparing... the page will reload.');
+          return;
+        }
         Love(Module);
       }
     </script>

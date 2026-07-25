@@ -31,13 +31,13 @@ echo ">> Packaging .love"
 
 echo ">> Compiling with love.js (threaded build)"
 rm -rf "$OUT_DIR"
-npx --yes "love.js@${LOVEJS_VERSION:-11.4.1}" "$LOVE" "$OUT_DIR" -t "Kristal" -m "$MEMORY"
+npx --yes love.js@latest "$LOVE" "$OUT_DIR" -t "Kristal" -m "$MEMORY"
 
 echo ">> Adding coi-serviceworker (cross-origin isolation for SharedArrayBuffer on GitHub Pages)"
 if [ -f "$HERE/coi-serviceworker.js" ]; then
     cp "$HERE/coi-serviceworker.js" "$OUT_DIR/coi-serviceworker.js"
 else
-    curl -fsSL https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/7b1d2a092d0d2dd2b7270b6f12f13605de26f214/coi-serviceworker.js \
+    curl -fsSL https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js \
         -o "$OUT_DIR/coi-serviceworker.js"
 fi
 
@@ -90,6 +90,19 @@ hook = """
 anchor = "Module.setStatus('Downloading...');"
 if 'KNET.fromLua' not in h:
     h = h.replace(anchor, anchor + hook, 1)
+old_load = "var applicationLoad = function(e) {\n        Love(Module);\n      }"
+new_load = """var applicationLoad = function(e) {
+        if (!window.crossOriginIsolated && 'serviceWorker' in navigator) {
+          // First-ever visit: coi-serviceworker is registering and is about to
+          // reload the page with cross-origin isolation enabled. Starting the
+          // engine now would throw "SharedArrayBuffer is not defined".
+          drawLoadingText('Preparing... the page will reload.');
+          return;
+        }
+        Love(Module);
+      }"""
+if 'crossOriginIsolated' not in h:
+    h = h.replace(old_load, new_load, 1)
 open(p, "w").write(h)
 print("   index.html wired")
 PYEOF

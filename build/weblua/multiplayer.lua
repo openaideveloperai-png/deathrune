@@ -254,14 +254,13 @@ function MP.update(dt)
                     if dist > 120 then
                         c:setPosition(t.x, t.y)
                     elseif dist > 0.5 then
-                        c:setPosition(c.x + dx * 0.35, c.y + dy * 0.35)
+                        -- Move like the engine's followers do: Character:move
+                        -- drives the walk animation and facing for us.
+                        local nx = MathUtils.approach(c.x, t.x, math.max(2, dist * 0.35) * DTMULT)
+                        local ny = MathUtils.approach(c.y, t.y, math.max(2, dist * 0.35) * DTMULT)
+                        pcall(function() c:move(nx - c.x, ny - c.y) end)
                     end
-                    if t.f then pcall(function() c:setFacing(t.f) end) end
-                    pcall(function()
-                        if c.sprite and c.sprite.walking ~= nil then
-                            c.sprite.walking = (t.w == 1) or dist > 2
-                        end
-                    end)
+                    if dist <= 0.5 and t.f then pcall(function() c:setFacing(t.f) end) end
                 end
             end
         end

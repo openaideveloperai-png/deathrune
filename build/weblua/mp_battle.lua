@@ -223,11 +223,21 @@ Utils.hook(Battle, "pushAction", function(orig, self, action_type, target, data,
     return orig(self, action_type, target, data, character_id, extra)
 end)
 
+-- Seed the RNG identically before any action resolves, so damage rolls and
+-- act outcomes are byte-identical on every client.
+Utils.hook(Battle, "processAction", function(orig, self, action, ...)
+    if MPB.active and action and action.character_id then
+        love.math.setRandomSeed(MPB.seed * 31 + MPB.turn * 997 + action.character_id * 101)
+    end
+    return orig(self, action, ...)
+end)
+
 function MPB.applyRemoteAction(d)
     local battle = Game.battle
     if not (MPB.active and battle) then return end
     local battler = battle.party[d.ci]
     if not battler then return end
+    if ownedByMe(d.ci) then return end -- never let an echo override our own input
     -- If that battler already has an action this turn, skip (duplicate)
     if battle.character_actions and battle.character_actions[d.ci] then return end
     MPB.applying = true
@@ -252,6 +262,24 @@ Utils.hook(Battle, "update", function(orig, self, ...)
         end
     end
 end)
+
+-- Cancelling a queued action must be mirrored too, or clients disagree about
+-- whose turn it is and the action menu appears to vanish.
+Utils.hook(Battle, "removeAction", function(orig, self, character_id, from_defeat)
+    if MPB.active and not MPB.applying and SELECT_STATES[self.state] and ownedByMe(character_id) then
+        KNet.send({ c = "send", e = "bcancel", d = { ci = character_id } })
+    end
+    return orig(self, character_id, from_defeat)
+end)
+
+function MPB.applyRemoteCancel(d)
+    local battle = Game.battle
+    if not (MPB.active and battle) then return end
+    if ownedByMe(d.ci) then return end
+    MPB.applying = true
+    pcall(function() battle:removeAction(d.ci) end)
+    MPB.applying = false
+end
 
 -------------------------------------------------------------------------------
 -- Attack minigame: you time YOUR attack; results are mirrored
@@ -284,6 +312,26 @@ Utils.hook(Battle, "handleAttackingInput", function(orig, self, key)
             self:finishAction(action)
         end
     end
+end)
+
+-- Remote-owned attack bolts wait at the hit line until that player's result
+-- arrives instead of racing into an auto-miss (which desynced enemy HP and
+-- could end the battle early on one client only).
+Utils.hook(AttackBox, "getClose", function(orig, self)
+    local v = orig(self)
+    if MPB.active and not MPB.attack_timeout and not self.attacked and Game.battle then
+        local ci = Game.battle:getPartyIndex(self.battler.chara.id)
+        if ci and not ownedByMe(ci) and v <= -2 then
+            return -1.9
+        end
+    end
+    return v
+end)
+
+Utils.hook(Battle, "onAttackingState", function(orig, self, ...)
+    MPB.attack_timeout = false
+    MPB._atk_frames = 0
+    return orig(self, ...)
 end)
 
 function MPB.applyRemoteAttack(d)
@@ -343,12 +391,13 @@ function MPB.updateRemoteSoul(key, d)
     local s = MPB.remote_souls[key]
     if not s or s:isRemoved() then
         local ok, spr = pcall(function()
-            local spr = Sprite("player/heart", d.x or 0, d.y or 0)
+            -- Same sprite + size as the real battle soul (Soul uses
+            -- "player/heart_dodge" at native scale)
+            local spr = Sprite("player/heart_dodge", d.x or 0, d.y or 0)
             spr:setOrigin(0.5, 0.5)
-            spr:setScale(2)
             local info = MP.players[key]
             local col = info and info.color or { 1, 1, 1 }
-            spr:setColor(col[1], col[2], col[3], 0.8)
+            spr:setColor(col[1], col[2], col[3], 0.7)
             spr.layer = battle.soul.layer - 1
             battle:addChild(spr)
             return spr
@@ -432,6 +481,13 @@ function MPB.tick()
         clearRemoteSouls()
     end
 
+    -- Safety: if a remote player's attack result never arrives (lag, leave),
+    -- release their bolt after ~8s so the battle can continue.
+    if battle.state == "ATTACKING" then
+        MPB._atk_frames = (MPB._atk_frames or 0) + 1
+        if MPB._atk_frames > 240 then MPB.attack_timeout = true end
+    end
+
     -- stream my soul position during the bullet phase
     if battle.state == "DEFENDING" and battle.soul and not battle.soul:isRemoved() then
         MPB._t = (MPB._t or 0) + 1
@@ -464,6 +520,8 @@ function MPB.onMessage(from, e, p)
         MPB.applyRemoteAttack(p)
     elseif e == "bhurt" then
         MPB.applyRemoteHurt(p)
+    elseif e == "bcancel" then
+        MPB.applyRemoteCancel(p)
     elseif e == "spos" then
         MPB.updateRemoteSoul(from, p)
     end
