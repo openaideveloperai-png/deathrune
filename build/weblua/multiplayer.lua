@@ -113,6 +113,20 @@ function MP.leave()
     MP.remote_targets = {}
 end
 
+-- The party is the online roster: host=Kris, then joiners in order. Applied on
+-- world spawn and whenever the roster changes (deferred while a battle runs).
+function MP.applyParty()
+    if not (MP.started and Game and Game.getPartyMember) then return end
+    if Game.battle then MP._party_dirty = true return end
+    MP._party_dirty = false
+    local new = {}
+    for i in ipairs(MP.order) do
+        local ok, pm = pcall(function() return Game:getPartyMember(MP.charForIndex(i)) end)
+        if ok and pm then table.insert(new, pm) end
+    end
+    if #new > 0 then Game.party = new end
+end
+
 function MP.beginGame()
     MP.started = true
     MP.state = "playing"
@@ -143,6 +157,7 @@ KNet.on("presence", function(d)
     MP.order = sortedOrder(players)
     print("MP: roster now " .. #MP.order .. " player(s)")
     if MP.started and Game and Game.world then
+        MP.applyParty()
         MP.refreshRemotes()
     end
 end)
@@ -153,6 +168,8 @@ KNet.on("msg", function(d)
         if not MP.started then MP.beginGame() end
     elseif e == "pos" then
         MP.remote_targets[from] = p
+    elseif MP.battle then
+        MP.battle.onMessage(from, e, p)
     end
 end)
 
@@ -260,6 +277,7 @@ end
 Utils.hook(World, "spawnParty", function(orig, self, marker, party, extra, facing)
     if not MP.started then return orig(self, marker, party, extra, facing) end
 
+    MP.applyParty()
     local pm = Game:getPartyMember(MP.myChar())
     if type(marker) == "table" and marker[1] ~= nil and marker[2] ~= nil then
         self:spawnPlayer(marker[1], marker[2], pm:getActor(), pm.id)
@@ -296,20 +314,20 @@ end)
 -- PARTY button in the C menu (dark world menu)
 -------------------------------------------------------------------------------
 
-local function textSprite(text, w, h, color, bg)
+local function textSprite(text, w, h, color)
+    -- Renders text scaled to fit a w x h canvas, matching the dimensions of
+    -- the engine's real menu button textures so the C menu lays out correctly.
     local canvas = love.graphics.newCanvas(w, h)
     local prev = love.graphics.getCanvas()
     love.graphics.push("all")
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 0)
-    if bg then
-        love.graphics.setColor(bg)
-        love.graphics.rectangle("fill", 0, 0, w, h)
-    end
     local font = Assets.getFont("main", 16)
     love.graphics.setFont(font)
+    local tw, th = font:getWidth(text), font:getHeight()
+    local scale = math.min((w - 4) / tw, (h - 4) / th)
     love.graphics.setColor(color)
-    love.graphics.print(text, math.floor(w / 2 - font:getWidth(text) / 2), math.floor(h / 2 - font:getHeight() / 2))
+    love.graphics.print(text, math.floor(w / 2 - tw * scale / 2), math.floor(h / 2 - th * scale / 2), 0, scale, scale)
     love.graphics.setCanvas(prev)
     love.graphics.pop()
     return canvas
@@ -372,9 +390,9 @@ Utils.hook(DarkMenu, "addButtons", function(orig, self)
     if MP.started then
         self:addButton({
             ["state"]          = "MP_PARTY",
-            ["sprite"]         = textSprite("PARTY", 60, 20, { 0.7, 0.7, 0.7 }),
-            ["hovered_sprite"] = textSprite("PARTY", 60, 20, { 1, 1, 0.3 }),
-            ["desc_sprite"]    = textSprite("Online party", 90, 30, { 1, 1, 1 }),
+            ["sprite"]         = textSprite("PARTY", 33, 24, { 0.7, 0.7, 0.7 }),
+            ["hovered_sprite"] = textSprite("PARTY", 33, 24, { 1, 1, 0.3 }),
+            ["desc_sprite"]    = textSprite("Party", 35, 18, { 1, 1, 1 }),
             ["callback"]       = function()
                 self.box = MpPartyBox()
                 self.box.layer = self.layer + 1
@@ -611,11 +629,25 @@ end)
 -- Wire into the game loop
 -------------------------------------------------------------------------------
 
+-- Co-op battle hotkey: F8 starts the mod's "dummy" encounter for the whole
+-- room (same sync path as touching an enemy). Handy for testing parties.
+Utils.hook(World, "onKeyPressed", function(orig, self, key)
+    if MP.started and key == "f8" and not Game.battle then
+        pcall(function() Game:encounter("dummy", true) end)
+        return
+    end
+    return orig(self, key)
+end)
+
+-- Battle sync (defines MP.battle)
+require("src.web.mp_battle")
+
 KNet.init()
 
 local orig_update = love.update
 love.update = function(dt)
     orig_update(dt)
+    if MP.battle then pcall(MP.battle.tick) end
     local ok, err = pcall(MP.update, dt)
     if not ok and not MP._err_once then
         MP._err_once = true
