@@ -415,11 +415,28 @@ Utils.hook(Battle, "onDefendingEndState", function(orig, self, ...)
 end)
 
 Utils.hook(Battle, "onRemove", function(orig, self, ...)
+    if MPB.active and not MPB._end_sent then
+        MPB._end_sent = true
+        KNet.send({ c = "send", e = "bend", d = {} })
+    end
     clearRemoteSouls()
     MPB.active = false
+    MPB._end_sent = false
     if MP.applyParty then MP.applyParty() end
     return orig(self, ...)
 end)
+
+-- Convergence net: if another client's battle ended and ours is still going
+-- (a desync of any kind), end ours too instead of softlocking on their turn.
+function MPB.applyRemoteEnd()
+    local battle = Game.battle
+    if not (MPB.active and battle) then return end
+    if battle.state ~= "VICTORY" and battle.state ~= "TRANSITIONOUT" then
+        MPB.applying = true
+        pcall(function() battle:setState("VICTORY") end)
+        MPB.applying = false
+    end
+end
 
 -------------------------------------------------------------------------------
 -- Damage: a bullet hitting YOUR soul hurts YOUR character, mirrored to all
@@ -522,6 +539,8 @@ function MPB.onMessage(from, e, p)
         MPB.applyRemoteHurt(p)
     elseif e == "bcancel" then
         MPB.applyRemoteCancel(p)
+    elseif e == "bend" then
+        MPB.applyRemoteEnd()
     elseif e == "spos" then
         MPB.updateRemoteSoul(from, p)
     end

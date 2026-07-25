@@ -127,6 +127,16 @@ function MP.applyParty()
     if #new > 0 then Game.party = new end
 end
 
+-- True when any connected player runs a different build than we do; playing
+-- across versions desyncs, so the UI warns loudly.
+function MP.versionMismatch()
+    for _, key in ipairs(MP.order) do
+        local p = MP.players[key]
+        if p and p.v and MP.build and p.v ~= MP.build then return true end
+    end
+    return false
+end
+
 function MP.beginGame()
     MP.started = true
     MP.state = "playing"
@@ -136,6 +146,10 @@ end
 -------------------------------------------------------------------------------
 -- KNet handlers
 -------------------------------------------------------------------------------
+
+KNet.on("hello", function(d)
+    MP.build = d.v or "dev"
+end)
 
 KNet.on("status", function(d)
     if d.state == "joined" then
@@ -368,8 +382,12 @@ function MpPartyBox:draw()
             y = y + 24
         end
     end
+    if MP.versionMismatch() then
+        love.graphics.setColor(1, 0.3, 0.3)
+        love.graphics.print("! Players on different game versions - everyone should refresh !", 20, self.height - 48)
+    end
     love.graphics.setColor(0.6, 0.6, 0.6)
-    love.graphics.print("Press CANCEL to close", 20, self.height - 26)
+    love.graphics.print("Press CANCEL to close (build " .. tostring(MP.build or "?") .. ")", 20, self.height - 26)
     love.graphics.setColor(1, 1, 1, 1)
     Object.draw(self)
 end
@@ -585,12 +603,19 @@ function MainMenuOnline:draw()
                 end
             end
             love.graphics.setFont(small)
+            if MP.versionMismatch() then
+                love.graphics.setColor(1, 0.3, 0.3)
+                love.graphics.print("! PLAYERS ARE ON DIFFERENT GAME VERSIONS !", 64, 360)
+                love.graphics.print("Everyone press CTRL+SHIFT+R to reload, then rejoin.", 64, 378)
+            end
             love.graphics.setColor(0.7, 0.7, 0.7)
             if MP.hosting then
                 love.graphics.print("ENTER: start game for everyone   CANCEL: leave", 64, 400)
             else
                 love.graphics.print("Waiting for the host to start...   CANCEL: leave", 64, 400)
             end
+            love.graphics.setColor(0.4, 0.4, 0.4)
+            love.graphics.print("build " .. tostring(MP.build or "?"), 64, 424)
         end
     end
     love.graphics.setColor(1, 1, 1)

@@ -31,13 +31,13 @@ echo ">> Packaging .love"
 
 echo ">> Compiling with love.js (threaded build)"
 rm -rf "$OUT_DIR"
-npx --yes love.js@latest "$LOVE" "$OUT_DIR" -t "Kristal" -m "$MEMORY"
+npx --yes "love.js@${LOVEJS_VERSION:-11.4.1}" "$LOVE" "$OUT_DIR" -t "Kristal" -m "$MEMORY"
 
 echo ">> Adding coi-serviceworker (cross-origin isolation for SharedArrayBuffer on GitHub Pages)"
 if [ -f "$HERE/coi-serviceworker.js" ]; then
     cp "$HERE/coi-serviceworker.js" "$OUT_DIR/coi-serviceworker.js"
 else
-    curl -fsSL https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js \
+    curl -fsSL https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/7b1d2a092d0d2dd2b7270b6f12f13605de26f214/coi-serviceworker.js \
         -o "$OUT_DIR/coi-serviceworker.js"
 fi
 
@@ -105,6 +105,26 @@ if 'crossOriginIsolated' not in h:
     h = h.replace(old_load, new_load, 1)
 open(p, "w").write(h)
 print("   index.html wired")
+PYEOF
+
+BUILD_ID="$(date -u +%Y%m%d-%H%M%S)"
+echo ">> Stamping build $BUILD_ID (cache-busting all resources)"
+sed -i "s|REMOTE_PACKAGE_BASE = 'game.data'|REMOTE_PACKAGE_BASE = 'game.data?v=$BUILD_ID'|" "$OUT_DIR/game.js"
+python3 - "$OUT_DIR/index.html" "$BUILD_ID" <<'PYEOF'
+import sys
+p, v = sys.argv[1], sys.argv[2]
+h = open(p).read()
+for name in ["coi-serviceworker.js", "supabase.js", "knet.js", "theme/love.css"]:
+    h = h.replace('src="%s"' % name, 'src="%s?v=%s"' % (name, v))
+    h = h.replace('href="%s"' % name, 'href="%s?v=%s"' % (name, v))
+h = h.replace('src="game.js"', 'src="game.js?v=%s"' % v)
+h = h.replace('src="love.js"', 'src="love.js?v=%s"' % v)
+h = h.replace('<script src="supabase.js',
+    '<script>window.KRISTAL_BUILD="%s";console.log("Kristal web build "+window.KRISTAL_BUILD);</script>\n    <script src="supabase.js' % v)
+h = h.replace('Hint: Reload the page if screen is blank',
+    'Hint: Reload the page if screen is blank &middot; build %s' % v)
+open(p, "w").write(h)
+print("   build id stamped into index.html")
 PYEOF
 
 # GitHub Pages serves everything except files starting with "_" and won't serve

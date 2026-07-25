@@ -69,7 +69,7 @@ window.KNET = (function () {
       for (var k in st) {
         if (st[k] && st[k][0]) {
           var m = st[k][0];
-          players.push({ key: k, name: m.name, color: m.color, ts: m.ts, h: m.h });
+          players.push({ key: k, name: m.name, color: m.color, ts: m.ts, h: m.h, v: m.v });
         }
       }
       toLua("presence", { players: players });
@@ -80,7 +80,7 @@ window.KNET = (function () {
     channel.subscribe(function (status, err) {
       if (status === "SUBSCRIBED") {
         chJoined = true;
-        channel.track(Object.assign({ ts: trackTs, h: hostFlag }, trackMeta));
+        channel.track(Object.assign({ ts: trackTs, h: hostFlag, v: window.KRISTAL_BUILD || "dev" }, trackMeta));
         toLua("status", { state: "joined", room: room, key: myKey });
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
         toLua("status", { state: "error", why: String(status) + (err ? ": " + err.message : "") });
@@ -113,7 +113,7 @@ window.KNET = (function () {
     ws.onopen = function () {
       ws.send(JSON.stringify({
         a: "join", room: room, key: myKey,
-        meta: Object.assign({ ts: Date.now(), h: hosting ? 1 : 0 }, meta || {}),
+        meta: Object.assign({ ts: Date.now(), h: hosting ? 1 : 0, v: window.KRISTAL_BUILD || "dev" }, meta || {}),
       }));
       toLua("status", { state: "joined", room: room, key: myKey });
     };
@@ -148,7 +148,7 @@ window.KNET = (function () {
       if (m.c === "ready") {
         savedir = m.savedir;
         try { Module.FS.mkdirTree(savedir); } catch (e) {}
-        toLua("hello", {});
+        toLua("hello", { v: window.KRISTAL_BUILD || "dev" });
       } else if (m.c === "ack") {
         queue = queue.filter(function (x) { return x.s > m.s; });
       } else if (m.c === "host") {
