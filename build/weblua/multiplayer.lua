@@ -181,7 +181,9 @@ KNet.on("msg", function(d)
     if e == "start" then
         if not MP.started then MP.beginGame() end
     elseif e == "pos" then
-        MP.remote_targets[from] = p
+        MP.remote_targets[from] = MP.remote_targets[from] or MP.newInterp()
+        MP.interpPush(MP.remote_targets[from], p.st, p)
+        MP.remote_targets[from].last = p
     elseif MP.battle then
         MP.battle.onMessage(from, e, p)
     end
@@ -215,7 +217,7 @@ function MP.refreshRemotes()
             if c then
                 c.mp_name = info and info.name or c.mp_name
                 c.mp_color = info and info.color or c.mp_color
-                local t = MP.remote_targets[key]
+                local t = MP.remote_targets[key] and MP.remote_targets[key].last
                 c.visible = not (t and t.m and t.m ~= myMap)
             end
         end
@@ -231,6 +233,54 @@ function MP.refreshRemotes()
 end
 
 local function round(n) return math.floor(n + 0.5) end
+
+-------------------------------------------------------------------------------
+-- Interpolation buffers: remote entities are rendered ~130ms in the past,
+-- gliding between received samples at constant velocity. This is what makes
+-- movement smooth regardless of network jitter or the 15Hz send rate.
+-------------------------------------------------------------------------------
+
+local INTERP_DELAY = 130   -- ms behind the sender's clock
+local EXTRAP_LIMIT = 120   -- ms of dead-reckoning when packets are late
+
+function MP.newInterp() return { samples = {}, offset = nil } end
+
+function MP.interpPush(buf, st, d)
+    if type(st) ~= "number" then return end
+    local now = love.timer.getTime() * 1000
+    local off = now - st
+    if not buf.offset or off < buf.offset then buf.offset = off end
+    buf.offset = buf.offset + 0.002 * (off - buf.offset) -- drift correction
+    local n = #buf.samples
+    if n > 0 and st <= buf.samples[n].st then return end  -- drop out-of-order
+    buf.samples[n + 1] = { st = st, d = d }
+    if n + 1 > 40 then table.remove(buf.samples, 1) end
+end
+
+function MP.interpSample(buf)
+    local s = buf.samples
+    if #s == 0 then return nil end
+    local target = love.timer.getTime() * 1000 - (buf.offset or 0) - INTERP_DELAY
+    if target <= s[1].st then return s[1].d end
+    for i = #s, 1, -1 do
+        if s[i].st <= target then
+            local a, b = s[i], s[i + 1]
+            if not b then
+                local p = s[i - 1]
+                if p and (target - a.st) < EXTRAP_LIMIT and a.st > p.st then
+                    local k = math.min((target - a.st) / (a.st - p.st), 1.5)
+                    return { x = a.d.x + (a.d.x - p.d.x) * k, y = a.d.y + (a.d.y - p.d.y) * k,
+                             f = a.d.f, w = a.d.w, m = a.d.m }
+                end
+                return a.d
+            end
+            local k = (target - a.st) / math.max(1, b.st - a.st)
+            return { x = a.d.x + (b.d.x - a.d.x) * k, y = a.d.y + (b.d.y - a.d.y) * k,
+                     f = k < 0.5 and a.d.f or b.d.f, w = b.d.w or a.d.w, m = b.d.m or a.d.m }
+        end
+    end
+    return s[#s].d
+end
 
 function MP.update(dt)
     KNet.update()
@@ -248,16 +298,18 @@ function MP.update(dt)
                 KNet.send({ c = "send", e = "pos", d = {
                     x = round(p.x), y = round(p.y),
                     f = p.facing, m = map, w = moving and 1 or 0,
+                    st = math.floor(love.timer.getTime() * 1000),
                 } })
             end
             MP._lx, MP._ly = p.x, p.y
             MP._was_moving = moving
         end
 
-        -- move remote characters toward their targets
+        -- render remote characters from their interpolation buffers
         local myMap = Game.world.map and Game.world.map.id or "?"
         for key, c in pairs(MP.remotes) do
-            local t = MP.remote_targets[key]
+            local buf = MP.remote_targets[key]
+            local t = buf and MP.interpSample(buf)
             if t and c and not c:isRemoved() then
                 if t.m and t.m ~= myMap then
                     c.visible = false
@@ -265,16 +317,18 @@ function MP.update(dt)
                     c.visible = true
                     local dx, dy = (t.x or c.x) - c.x, (t.y or c.y) - c.y
                     local dist = math.sqrt(dx * dx + dy * dy)
-                    if dist > 120 then
+                    if dist > 150 then
                         c:setPosition(t.x, t.y)
-                    elseif dist > 0.5 then
-                        -- Move like the engine's followers do: Character:move
-                        -- drives the walk animation and facing for us.
-                        local nx = MathUtils.approach(c.x, t.x, math.max(2, dist * 0.35) * DTMULT)
-                        local ny = MathUtils.approach(c.y, t.y, math.max(2, dist * 0.35) * DTMULT)
-                        pcall(function() c:move(nx - c.x, ny - c.y) end)
+                    elseif dist > 0.1 then
+                        -- Character:move drives the walk animation and facing
+                        pcall(function() c:move(dx, dy) end)
                     end
-                    if dist <= 0.5 and t.f then pcall(function() c:setFacing(t.f) end) end
+                    if dist <= 0.5 then
+                        pcall(function()
+                            if c.sprite then c.sprite.walking = false end
+                            if t.f then c:setFacing(t.f) end
+                        end)
+                    end
                 end
             end
         end

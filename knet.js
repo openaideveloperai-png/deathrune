@@ -41,7 +41,7 @@ window.KNET = (function () {
       Module.FS.writeFile(savedir + "/knet_in.json", JSON.stringify({ msgs: queue }));
     } catch (e) {}
   }
-  setInterval(flush, 33);
+  setInterval(flush, 16);
 
   function genKey() {
     return "p" + Math.random().toString(36).slice(2, 10);

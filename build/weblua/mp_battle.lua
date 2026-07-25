@@ -406,7 +406,8 @@ function MPB.updateRemoteSoul(key, d)
         s = spr
         MPB.remote_souls[key] = s
     end
-    s.mp_tx, s.mp_ty = d.x, d.y
+    s.mp_buf = s.mp_buf or MP.newInterp()
+    MP.interpPush(s.mp_buf, d.st, d)
 end
 
 Utils.hook(Battle, "onDefendingEndState", function(orig, self, ...)
@@ -507,19 +508,17 @@ function MPB.tick()
 
     -- stream my soul position during the bullet phase
     if battle.state == "DEFENDING" and battle.soul and not battle.soul:isRemoved() then
-        MPB._t = (MPB._t or 0) + 1
-        if MPB._t % 2 == 0 then
-            KNet.send({ c = "send", e = "spos", d = {
-                x = math.floor(battle.soul.x + 0.5), y = math.floor(battle.soul.y + 0.5),
-            } })
-        end
+        KNet.send({ c = "send", e = "spos", d = {
+            x = math.floor(battle.soul.x + 0.5), y = math.floor(battle.soul.y + 0.5),
+            st = math.floor(love.timer.getTime() * 1000),
+        } })
     end
 
-    -- smooth remote souls toward their targets
+    -- render remote souls from their interpolation buffers
     for _, s in pairs(MPB.remote_souls) do
-        if s.mp_tx and not s:isRemoved() then
-            s.x = s.x + (s.mp_tx - s.x) * 0.5
-            s.y = s.y + (s.mp_ty - s.y) * 0.5
+        if s.mp_buf and not s:isRemoved() then
+            local d = MP.interpSample(s.mp_buf)
+            if d then s.x, s.y = d.x, d.y end
         end
     end
 end
