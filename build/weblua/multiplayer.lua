@@ -320,15 +320,17 @@ function MP.update(dt)
                     if dist > 150 then
                         c:setPosition(t.x, t.y)
                     elseif dist > 0.1 then
-                        -- Character:move drives the walk animation and facing
-                        pcall(function() c:move(dx, dy) end)
+                        -- keep_facing=true: never derive direction from the
+                        -- interpolated motion (jittery deltas flash the wrong
+                        -- sprite); the sender's real facing is authoritative
+                        pcall(function() c:move(dx, dy, 1, true) end)
                     end
                     if dist <= 0.5 then
                         pcall(function()
                             if c.sprite then c.sprite.walking = false end
-                            if t.f then c:setFacing(t.f) end
                         end)
                     end
+                    if t.f then pcall(function() c:setFacing(t.f) end) end
                 end
             end
         end
