@@ -125,6 +125,8 @@ mod_css = """
       .kmods-chip button { border: 0; background: none; cursor: pointer;
                            color: rgb(233,73,154); font-weight: bold; }
       .kmods-empty { opacity: .6; }
+      .kmods-clear { border: 0; background: none; cursor: pointer; font-size: 12px;
+                     color: rgb(28,78,104); text-decoration: underline; }
     </style>
 """
 h = h.replace("  </head>", mod_css + "  </head>", 1)

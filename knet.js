@@ -149,6 +149,10 @@ window.KNET = (function () {
         savedir = m.savedir;
         try { Module.FS.mkdirTree(savedir); } catch (e) {}
         toLua("hello", { v: window.KRISTAL_BUILD || "dev" });
+      } else if (m.c === "mods_ok") {
+        // Engine reached the main menu, so this boot survived whatever mods
+        // were installed -- safe to install them again next time.
+        if (window.KMODS && KMODS.bootSucceeded) KMODS.bootSucceeded();
       } else if (m.c === "ack") {
         queue = queue.filter(function (x) { return x.s > m.s; });
       } else if (m.c === "host") {

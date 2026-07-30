@@ -57,6 +57,9 @@ end)
 -- at the main menu.
 Utils.hook(MainMenu, "enter", function(orig, self, ...)
     orig(self, ...)
+    -- Reaching the menu means asset + mod loading survived this boot; let the
+    -- page clear its "mods may have crashed us" flag.
+    KNet.send({ c = "mods_ok" })
     if WebMods.pending then
         WebMods.rescan()
     end

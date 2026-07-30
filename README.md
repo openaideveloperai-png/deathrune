@@ -56,7 +56,14 @@ loader already understands `.zip` mods, so the page just needs to hand it one:
 
 Mods are stored in your browser (IndexedDB), so they **persist across reloads**
 and are re-installed before the engine scans for projects. Remove one with the
-✕ next to its name.
+✕ next to its name, or **Remove all**.
+
+⚠️ **It must be the mod folder itself, not a whole game download.** The zip has
+to have `mod.json` at its top level. Downloads from GameJolt/itch are usually
+the *entire game* (the engine plus a `mods/` folder inside), often hundreds of
+MB -- those are rejected with an explanation telling you which inner folder to
+zip instead. Uploads over 128 MB are refused, since a browser tab can't hold
+them.
 
 **Mods work online too:** in the lobby the host presses ENTER and picks any
 installed project, and everyone in the room loads that same project and save
