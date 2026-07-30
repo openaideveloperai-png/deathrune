@@ -166,5 +166,5 @@ window.KNET = (function () {
     return true;
   }
 
-  return { fromLua: fromLua };
+  return { fromLua: fromLua, push: toLua, saveDir: function () { return savedir; } };
 })();

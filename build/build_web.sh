@@ -68,6 +68,7 @@ PYEOF
 
 echo ">> Installing multiplayer web scripts"
 cp "$HERE/web/supabase.js" "$OUT_DIR/supabase.js"
+cp "$HERE/web/modloader.js" "$OUT_DIR/modloader.js"
 sed -e "s|__SUPA_URL__|${SUPA_URL:-https://ofnhmnzojewxbuxntntq.supabase.co}|" \
     -e "s|__SUPA_KEY__|${SUPA_KEY:-sb_publishable_EDDPpcBiKAC6CZdfidZonw_a-WBYAau}|" \
     "$HERE/web/knet.js" > "$OUT_DIR/knet.js"
@@ -78,7 +79,8 @@ import sys
 p = sys.argv[1]
 h = open(p).read()
 needle = '<link rel="stylesheet" type="text/css" href="theme/love.css">'
-scripts = '<script src="supabase.js"></script>\n    <script src="knet.js"></script>\n    '
+scripts = ('<script src="supabase.js"></script>\n    <script src="knet.js"></script>\n'
+           '    <script src="modloader.js"></script>\n    ')
 if 'knet.js' not in h:
     h = h.replace(needle, scripts + needle, 1)
 hook = """
@@ -90,6 +92,43 @@ hook = """
 anchor = "Module.setStatus('Downloading...');"
 if 'KNET.fromLua' not in h:
     h = h.replace(anchor, anchor + hook, 1)
+# install stored mods before the engine scans the mods folder
+h = h.replace("var Module = {", "var Module = {\n        preRun: [function () { if (window.KMODS) KMODS.installToFS(); }],", 1)
+
+# mod manager UI under the canvas
+mod_ui = """
+    <div id="kmods">
+      <div class="kmods-row">
+        <strong>Mods</strong>
+        <label class="kmods-btn">+ Add mod (.zip)
+          <input id="kmods-file" type="file" accept=".zip,.love" multiple hidden>
+        </label>
+        <span id="kmods-status">Drop a Kristal mod .zip anywhere on this page.</span>
+      </div>
+      <div id="kmods-list"><span class="kmods-empty">No mods added yet.</span></div>
+    </div>
+"""
+h = h.replace("    <footer>", mod_ui + "    <footer>", 1)
+
+mod_css = """
+    <style>
+      #kmods { font-family: arial; font-size: 13px; color: rgb(28,78,104);
+               max-width: 640px; margin: 6px auto 40px; text-align: left; }
+      .kmods-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .kmods-btn { background: rgb(233,73,154); color: #fff; padding: 3px 10px;
+                   border-radius: 4px; cursor: pointer; white-space: nowrap; }
+      .kmods-btn:hover { background: rgb(252,207,230); color: rgb(110,30,71); }
+      #kmods-list { margin-top: 6px; }
+      .kmods-chip { display: inline-block; background: rgba(255,255,255,.6);
+                    border: 1px solid rgb(142,195,227); border-radius: 4px;
+                    padding: 2px 6px; margin: 2px 4px 2px 0; }
+      .kmods-chip button { border: 0; background: none; cursor: pointer;
+                           color: rgb(233,73,154); font-weight: bold; }
+      .kmods-empty { opacity: .6; }
+    </style>
+"""
+h = h.replace("  </head>", mod_css + "  </head>", 1)
+
 old_load = "var applicationLoad = function(e) {\n        Love(Module);\n      }"
 new_load = """var applicationLoad = function(e) {
         if (!window.crossOriginIsolated && 'serviceWorker' in navigator) {
@@ -99,7 +138,13 @@ new_load = """var applicationLoad = function(e) {
           drawLoadingText('Preparing... the page will reload.');
           return;
         }
-        Love(Module);
+        // Load stored mods out of IndexedDB before booting, so preRun can put
+        // them on disk ahead of Kristal's mod scan.
+        var ready = window.KMODS ? KMODS.preload() : Promise.resolve();
+        ready.then(function () {
+          if (window.KMODS) KMODS.initUI();
+          Love(Module);
+        });
       }"""
 if 'crossOriginIsolated' not in h:
     h = h.replace(old_load, new_load, 1)

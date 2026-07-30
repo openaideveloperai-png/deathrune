@@ -7,12 +7,29 @@
     <title>Kristal</title>
 
     <!-- Load custom style sheet -->
-    <script src="coi-serviceworker.js?v=20260725-043036"></script>
+    <script src="coi-serviceworker.js?v=20260730-050134"></script>
 
-    <script>window.KRISTAL_BUILD="20260725-043036";console.log("Kristal web build "+window.KRISTAL_BUILD);</script>
-    <script src="supabase.js?v=20260725-043036"></script>
-    <script src="knet.js?v=20260725-043036"></script>
-    <link rel="stylesheet" type="text/css" href="theme/love.css?v=20260725-043036">
+    <script>window.KRISTAL_BUILD="20260730-050134";console.log("Kristal web build "+window.KRISTAL_BUILD);</script>
+    <script src="supabase.js?v=20260730-050134"></script>
+    <script src="knet.js?v=20260730-050134"></script>
+    <script src="modloader.js"></script>
+    <link rel="stylesheet" type="text/css" href="theme/love.css?v=20260730-050134">
+
+    <style>
+      #kmods { font-family: arial; font-size: 13px; color: rgb(28,78,104);
+               max-width: 640px; margin: 6px auto 40px; text-align: left; }
+      .kmods-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .kmods-btn { background: rgb(233,73,154); color: #fff; padding: 3px 10px;
+                   border-radius: 4px; cursor: pointer; white-space: nowrap; }
+      .kmods-btn:hover { background: rgb(252,207,230); color: rgb(110,30,71); }
+      #kmods-list { margin-top: 6px; }
+      .kmods-chip { display: inline-block; background: rgba(255,255,255,.6);
+                    border: 1px solid rgb(142,195,227); border-radius: 4px;
+                    padding: 2px 6px; margin: 2px 4px 2px 0; }
+      .kmods-chip button { border: 0; background: none; cursor: pointer;
+                           color: rgb(233,73,154); font-weight: bold; }
+      .kmods-empty { opacity: .6; }
+    </style>
   </head>
   <body>
     <center>
@@ -65,6 +82,7 @@
       }, false);
 
       var Module = {
+        preRun: [function () { if (window.KMODS) KMODS.installToFS(); }],
         arguments: ["./game.love"],
         INITIAL_MEMORY: 268435456,
         printErr: console.error.bind(console),
@@ -116,13 +134,30 @@
           drawLoadingText('Preparing... the page will reload.');
           return;
         }
-        Love(Module);
+        // Load stored mods out of IndexedDB before booting, so preRun can put
+        // them on disk ahead of Kristal's mod scan.
+        var ready = window.KMODS ? KMODS.preload() : Promise.resolve();
+        ready.then(function () {
+          if (window.KMODS) KMODS.initUI();
+          Love(Module);
+        });
       }
     </script>
-    <script type="text/javascript" src="game.js?v=20260725-043036"></script>
-    <script async type="text/javascript" src="love.js?v=20260725-043036" onload="applicationLoad(this)"></script>
+    <script type="text/javascript" src="game.js?v=20260730-050134"></script>
+    <script async type="text/javascript" src="love.js?v=20260730-050134" onload="applicationLoad(this)"></script>
+
+    <div id="kmods">
+      <div class="kmods-row">
+        <strong>Mods</strong>
+        <label class="kmods-btn">+ Add mod (.zip)
+          <input id="kmods-file" type="file" accept=".zip,.love" multiple hidden>
+        </label>
+        <span id="kmods-status">Drop a Kristal mod .zip anywhere on this page.</span>
+      </div>
+      <div id="kmods-list"><span class="kmods-empty">No mods added yet.</span></div>
+    </div>
     <footer>
-      <p>Built with <a href="https://github.com/Davidobot/love.js">love.js</a> <button onclick="goFullScreen();">Go Fullscreen</button><br>Hint: Reload the page if screen is blank &middot; build 20260725-043036</p>
+      <p>Built with <a href="https://github.com/Davidobot/love.js">love.js</a> <button onclick="goFullScreen();">Go Fullscreen</button><br>Hint: Reload the page if screen is blank &middot; build 20260730-050134</p>
     </footer>
   </body>
 </html>

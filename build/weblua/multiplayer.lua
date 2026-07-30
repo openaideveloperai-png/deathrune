@@ -137,10 +137,10 @@ function MP.versionMismatch()
     return false
 end
 
-function MP.beginGame()
+function MP.beginGame(mod_id, save_id)
     MP.started = true
     MP.state = "playing"
-    Kristal.loadMod("example", 1)
+    Kristal.loadMod(mod_id or "example", save_id or 1)
 end
 
 -------------------------------------------------------------------------------
@@ -179,7 +179,16 @@ end)
 KNet.on("msg", function(d)
     local from, e, p = d.from, d.e, d.p or {}
     if e == "start" then
-        if not MP.started then MP.beginGame() end
+        if not MP.started then
+            local id = p.mod or "example"
+            if Kristal.Mods and Kristal.Mods.getMod(id) then
+                MP.missing_mod = nil
+                MP.beginGame(id, p.save)
+            else
+                MP.missing_mod = id
+                print("MP: host started '" .. tostring(id) .. "' but it is not installed here")
+            end
+        end
     elseif e == "pos" then
         MP.remote_targets[from] = MP.remote_targets[from] or MP.newInterp()
         MP.interpPush(MP.remote_targets[from], p.st, p)
@@ -577,8 +586,8 @@ function MainMenuOnline:onKeyPressed(key, is_repeat)
             end
         elseif st == "LOBBY" then
             if MP.hosting and MP.state == "lobby" then
-                KNet.send({ c = "send", e = "start", d = { mod = "example" } })
-                MP.beginGame()
+                -- pick any installed project; loadMod broadcasts it to the room
+                self.menu:setState("MODSELECT")
             end
         end
         return true
@@ -666,9 +675,13 @@ function MainMenuOnline:draw()
             end
             love.graphics.setColor(0.7, 0.7, 0.7)
             if MP.hosting then
-                love.graphics.print("ENTER: start game for everyone   CANCEL: leave", 64, 400)
+                love.graphics.print("ENTER: choose a project & start for everyone   CANCEL: leave", 64, 400)
             else
                 love.graphics.print("Waiting for the host to start...   CANCEL: leave", 64, 400)
+            end
+            if MP.missing_mod then
+                love.graphics.setColor(1, 0.4, 0.4)
+                love.graphics.print("Host started \"" .. tostring(MP.missing_mod) .. "\" - add that mod .zip on this page first!", 64, 340)
             end
             love.graphics.setColor(0.4, 0.4, 0.4)
             love.graphics.print("build " .. tostring(MP.build or "?"), 64, 424)
@@ -718,6 +731,20 @@ Utils.hook(World, "onKeyPressed", function(orig, self, key)
     end
     return orig(self, key)
 end)
+
+-- Whatever project the host picks from the mod list is the one everybody
+-- loads, so any installed mod works online -- not just the bundled example.
+Utils.hook(Kristal, "loadMod", function(orig, id, save_id, save_name, after)
+    if MP.hosting and MP.state == "lobby" and not MP.started then
+        KNet.send({ c = "send", e = "start", d = { mod = id, save = save_id or 1 } })
+        MP.started = true
+        MP.state = "playing"
+    end
+    return orig(id, save_id, save_name, after)
+end)
+
+-- Web mod support (upload .zip mods from the page)
+require("src.web.webmods")
 
 -- Battle sync (defines MP.battle)
 require("src.web.mp_battle")

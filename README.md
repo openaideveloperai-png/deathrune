@@ -42,6 +42,26 @@ code) or **join** with a friend's code. Rooms run over **Supabase Realtime**
   bullet phase, host-authoritative attacks) are the next stage and not yet
   synced -- battles currently run locally per player.
 
+## 📦 Mods
+
+The browser build supports **real Kristal mods**, same as desktop. Kristal's
+loader already understands `.zip` mods, so the page just needs to hand it one:
+
+1. Zip up a Kristal project (the folder containing `mod.json`) -- or use a
+   `.zip` someone else published.
+2. **Drag it anywhere onto the page**, or use the **+ Add mod (.zip)** button
+   under the game.
+3. Open **Play** and it's in the project list, next to the bundled example.
+
+Mods are stored in your browser (IndexedDB), so they **persist across reloads**
+and are re-installed before the engine scans for projects. Remove one with the
+✕ next to its name.
+
+**Mods work online too:** in the lobby the host presses ENTER and picks any
+installed project, and everyone in the room loads that same project and save
+slot. Players who don't have that mod get told which one they're missing --
+they just add the same `.zip` and rejoin.
+
 ## What's in here
 
 ```
@@ -123,9 +143,8 @@ cd public && python3 -m http.server 8000   # then open http://localhost:8000
 - **Slow first load.** The engine decodes all of its assets in interpreted Lua
   (love.js has no JIT), which takes roughly 40–60 s on first load. Subsequent
   loads are faster thanks to browser caching.
-- **No local mods.** The browser build ships only the engine (and its bundled
-  example), and there is no folder to drop mods into. "Open folder" does
-  nothing on the web.
+- **Mods are added through the page**, not a folder on disk -- see the Mods
+  section above. "Open folder" does nothing on the web.
 - **No Discord Rich Presence / online update checks.** These rely on native
   libraries that don't exist in a browser; they're cleanly disabled.
 - Audio starts only after your first click/keypress (browser autoplay policy).
