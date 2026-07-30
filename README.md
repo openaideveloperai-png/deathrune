@@ -58,12 +58,22 @@ Mods are stored in your browser (IndexedDB), so they **persist across reloads**
 and are re-installed before the engine scans for projects. Remove one with the
 ✕ next to its name, or **Remove all**.
 
-⚠️ **It must be the mod folder itself, not a whole game download.** The zip has
-to have `mod.json` at its top level. Downloads from GameJolt/itch are usually
-the *entire game* (the engine plus a `mods/` folder inside), often hundreds of
-MB -- those are rejected with an explanation telling you which inner folder to
-zip instead. Uploads over 128 MB are refused, since a browser tab can't hold
-them.
+**Full game downloads work too.** Releases from GameJolt/itch are usually the
+*entire Kristal engine* with the mod inside its `mods/` folder -- drop that zip
+in as-is and the mod is unpacked out of it automatically (the engine copy and
+`mod_template` are ignored, and only the mod is kept, so an 18 MB download can
+become a 0.2 MB install). A zip of the mod's parent folder works as well. All
+three layouts are handled:
+
+| What you have | What happens |
+|---|---|
+| `mod.json` at the top of the zip | stored as-is; Kristal mounts the zip |
+| `SomeFolder/mod.json` | that folder is unpacked and installed |
+| whole engine build with `mods/YourMod/` | `YourMod` is unpacked out of it |
+
+Unpacking uses the browser's built-in `DecompressionStream`, so there's no zip
+library shipped. If a boot ever dies while installing mods, the next load skips
+them and says so, instead of crash-looping.
 
 **Mods work online too:** in the lobby the host presses ENTER and picks any
 installed project, and everyone in the room loads that same project and save

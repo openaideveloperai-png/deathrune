@@ -1,23 +1,21 @@
 // Web mod support for Kristal.
 //
-// Kristal's mod loader already understands .zip mods: when it scans the mods
-// folder it mounts any .zip it finds (see src/engine/loadthread.lua). So the
-// browser build only has to place the uploaded zip into the save directory's
-// mods/ folder -- no unzipping, no engine changes to how mods are read.
+// Three archive layouts are accepted, because that's what people actually have:
 //
-// Mods are kept in IndexedDB so they survive reloads, and are written back into
-// the Emscripten filesystem during Module.preRun, i.e. before the engine boots
-// and scans for mods.
+//   1. A plain mod zip (mod.json at the top). Stored as-is -- Kristal's own
+//      loader mounts .zip mods when it scans the mods folder.
+//   2. A zip of the mod's parent folder (mod.json one level down).
+//   3. A **full engine/game download** (the whole Kristal tree with the mod
+//      inside its mods/ folder) -- e.g. a GameJolt or itch release.
 //
-// Uploads are validated before being stored, because the two most common
-// mistakes both used to end badly:
-//   * a full game/engine download (hundreds of MB, no mod.json at the root)
-//     would be stored and then crash the tab on every single load, since the
-//     stored copy is re-read at boot -- an inescapable crash loop.
-//   * a zip of the mod's *parent* folder puts mod.json one level too deep, so
-//     Kristal silently ignores it.
-// Both are now rejected up front with an explanation, plus a hard size cap and
-// a safe-mode flag that skips mod installation if the previous boot died.
+// For 2 and 3 the mod is unpacked out of the archive and installed as a real
+// folder under the save directory's mods/, which Kristal reads exactly like a
+// desktop install. Unpacking uses the browser's built-in DecompressionStream,
+// so there's no zip library to ship.
+//
+// Everything installed is mirrored into IndexedDB and rewritten into the
+// Emscripten filesystem during Module.preRun, i.e. before the engine scans for
+// mods, so mods survive reloads.
 
 window.KMODS = (function () {
   var SAVEDIR = "/home/web_user/love/kristal";
@@ -25,14 +23,17 @@ window.KMODS = (function () {
   var DB_NAME = "kristal-mods";
   var STORE = "files";
 
-  var MAX_BYTES = 128 * 1024 * 1024;      // per mod
-  var MAX_TOTAL_BYTES = 256 * 1024 * 1024; // all mods together
-  var WARN_BYTES = 48 * 1024 * 1024;
-
+  var MAX_READ_BYTES = 512 * 1024 * 1024;   // largest archive we'll open
+  var MAX_INSTALL_BYTES = 192 * 1024 * 1024; // largest single mod we'll keep
+  var MAX_TOTAL_BYTES = 384 * 1024 * 1024;   // all mods together
   var BOOT_FLAG = "kristal-mods-installing";
 
-  var entries = [];  // [{name, size}] -- metadata only, never the bytes
-  var pending = [];  // [{name, bytes}] held only between preload() and preRun
+  // Folders inside a full engine build that aren't the user's mod.
+  var SKIP_MODS = { example: 1, mod_template: 1 };
+
+  var crashedLastBoot = false; // flag state as it was BEFORE this boot set it
+  var entries = [];  // [{name, size, kind}] -- metadata for the UI
+  var pending = [];  // [{name, value}] held only between preload() and preRun
 
   function mb(n) { return (n / 1048576).toFixed(1) + " MB"; }
 
@@ -41,9 +42,7 @@ window.KMODS = (function () {
     return new Promise(function (resolve, reject) {
       var req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = function () {
-        if (!req.result.objectStoreNames.contains(STORE)) {
-          req.result.createObjectStore(STORE);
-        }
+        if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
       };
       req.onsuccess = function () { resolve(req.result); };
       req.onerror = function () { reject(req.error); };
@@ -54,8 +53,8 @@ window.KMODS = (function () {
     return openDB().then(function (db) {
       return new Promise(function (resolve, reject) {
         var t = db.transaction(STORE, mode);
-        var out = fn(t.objectStore(STORE));
-        t.oncomplete = function () { resolve(out && out.result !== undefined ? out.result : out); };
+        fn(t.objectStore(STORE));
+        t.oncomplete = resolve;
         t.onerror = function () { reject(t.error); };
       });
     });
@@ -69,7 +68,7 @@ window.KMODS = (function () {
         var k = store.getAllKeys(), v = store.getAll();
         t.oncomplete = function () {
           var out = [];
-          for (var i = 0; i < k.result.length; i++) out.push({ name: k.result[i], bytes: v.result[i] });
+          for (var i = 0; i < k.result.length; i++) out.push({ name: k.result[i], value: v.result[i] });
           resolve(out);
         };
         t.onerror = function () { reject(t.error); };
@@ -77,60 +76,87 @@ window.KMODS = (function () {
     });
   }
 
-  // ------------------------------------------------------ zip introspection --
-  // Minimal central-directory reader: enough to list the archive's entries so
-  // we can tell a real mod from a full game download.
-  function zipEntries(bytes) {
+  // ------------------------------------------------------------ zip reading --
+  function readCentralDirectory(bytes) {
     var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     var eocd = -1;
-    var start = Math.max(0, bytes.length - 66000);
-    for (var i = bytes.length - 22; i >= start; i--) {
+    var floor = Math.max(0, bytes.length - 66000);
+    for (var i = bytes.length - 22; i >= floor; i--) {
       if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
     }
-    if (eocd < 0) return null; // not a zip at all
+    if (eocd < 0) return null;
     var count = dv.getUint16(eocd + 10, true);
     var cdOff = dv.getUint32(eocd + 16, true);
-    if (cdOff === 0xffffffff || count === 0xffff) return null; // zip64: skip checks
-    var names = [];
+    if (cdOff === 0xffffffff || count === 0xffff) return null; // zip64 unsupported
+    var list = [];
     var p = cdOff;
     for (var n = 0; n < count && p + 46 <= bytes.length; n++) {
       if (dv.getUint32(p, true) !== 0x02014b50) break;
+      var method = dv.getUint16(p + 10, true);
+      var cSize = dv.getUint32(p + 20, true);
+      var uSize = dv.getUint32(p + 24, true);
       var nameLen = dv.getUint16(p + 28, true);
       var extraLen = dv.getUint16(p + 30, true);
       var cmtLen = dv.getUint16(p + 32, true);
+      var lho = dv.getUint32(p + 42, true);
       var name = "";
       for (var c = 0; c < nameLen; c++) name += String.fromCharCode(bytes[p + 46 + c]);
-      names.push(name);
+      list.push({ name: name, method: method, cSize: cSize, uSize: uSize, lho: lho });
       p += 46 + nameLen + extraLen + cmtLen;
     }
-    return names;
+    return list;
   }
 
-  // Returns null if this archive is a usable Kristal mod, else a message.
-  function whyNotAMod(names) {
-    if (names === null) return null; // couldn't inspect: let the engine decide
-    var has = function (re) { return names.some(function (n) { return re.test(n); }); };
-    if (has(/^mod\.json$/)) return null; // 👍 a proper mod
+  function inflateEntry(bytes, e) {
+    var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (dv.getUint32(e.lho, true) !== 0x04034b50) {
+      return Promise.reject(new Error("bad local header for " + e.name));
+    }
+    var nameLen = dv.getUint16(e.lho + 26, true);
+    var extraLen = dv.getUint16(e.lho + 28, true);
+    var start = e.lho + 30 + nameLen + extraLen;
+    var data = bytes.subarray(start, start + e.cSize);
+    if (e.method === 0) return Promise.resolve(data);
+    if (e.method !== 8) return Promise.reject(new Error("unsupported compression in " + e.name));
+    if (typeof DecompressionStream === "undefined") {
+      return Promise.reject(new Error("this browser can't unpack zips (no DecompressionStream)"));
+    }
+    var stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Response(stream).arrayBuffer().then(function (buf) { return new Uint8Array(buf); });
+  }
 
-    var nested = names.filter(function (n) { return /^[^/]+\/mod\.json$/.test(n); });
-    if (nested.length === 1) {
-      var folder = nested[0].split("/")[0];
-      return 'This zip has the mod inside a "' + folder + '" folder. Open ' +
-             'that folder and zip its *contents* (so mod.json is at the top of the zip).';
-    }
-    var inMods = names.filter(function (n) { return /^mods\/[^/]+\/mod\.json$/.test(n); });
+  // Which mod folder(s) can we get out of this archive?
+  function planFor(list) {
+    if (list === null) return { kind: "zip" }; // couldn't inspect; let the engine try
+    var names = list.map(function (e) { return e.name; });
+    if (names.indexOf("mod.json") !== -1) return { kind: "zip" };
+
+    // full engine/game build: mods/<name>/mod.json
+    var inMods = [];
+    names.forEach(function (n) {
+      var m = /^mods\/([^/]+)\/mod\.json$/.exec(n);
+      if (m) inMods.push(m[1]);
+    });
     if (inMods.length) {
-      var list = inMods.map(function (n) { return n.split("/")[1]; }).join(", ");
-      return "This is a full game download, not a mod. The mod itself is in its " +
-             "mods folder (" + list + ") - unzip this, then zip that mod's own " +
-             "folder contents instead.";
+      var real = inMods.filter(function (n) { return !SKIP_MODS[n]; });
+      var picked = real.length ? real : inMods;
+      return { kind: "extract", folders: picked.map(function (n) { return { prefix: "mods/" + n + "/", name: n }; }) };
     }
-    if (has(/^main\.lua$/) && has(/^conf\.lua$/)) {
-      return "This is a whole Kristal/LOVE game, not a mod (no mod.json). " +
-             "Only individual mod folders can be added here.";
+
+    // zip of the mod's parent folder: <name>/mod.json
+    var nested = [];
+    names.forEach(function (n) {
+      var m = /^([^/]+)\/mod\.json$/.exec(n);
+      if (m && !SKIP_MODS[m[1]]) nested.push(m[1]);
+    });
+    if (nested.length) {
+      return { kind: "extract", folders: nested.map(function (n) { return { prefix: n + "/", name: n }; }) };
     }
-    return "No mod.json found at the top of this zip, so Kristal can't read it " +
-           "as a mod.";
+
+    if (names.indexOf("main.lua") !== -1 && names.indexOf("conf.lua") !== -1) {
+      return { kind: "error", why: "This looks like the Kristal engine with no mods inside it." };
+    }
+    return { kind: "error", why: "No mod.json found anywhere in this zip, so there's no mod to install." };
   }
 
   // ------------------------------------------------------------------ boot --
@@ -141,17 +167,24 @@ window.KMODS = (function () {
     try { v ? localStorage.setItem(BOOT_FLAG, "1") : localStorage.removeItem(BOOT_FLAG); } catch (e) {}
   }
 
-  // Read stored mods into memory. Called before the engine starts so the
-  // synchronous preRun step has the bytes ready.
+  function sizeOf(value) {
+    if (value instanceof Uint8Array) return value.length;
+    var t = 0;
+    (value.files || []).forEach(function (f) { t += f.bytes.length; });
+    return t;
+  }
+
   function preload() {
     if (!window.indexedDB) return Promise.resolve([]);
     return idbAll().then(function (list) {
       entries = (list || []).map(function (m) {
-        return { name: m.name, size: m.bytes && m.bytes.length || 0 };
+        return {
+          name: m.name, size: sizeOf(m.value),
+          kind: m.value instanceof Uint8Array ? "zip" : "folder",
+        };
       });
-      if (safeMode()) {
-        // The previous boot set this flag and never cleared it, i.e. the tab
-        // died while these mods were installed. Don't try again.
+      crashedLastBoot = safeMode();
+      if (crashedLastBoot) {
         pending = [];
         console.warn("KMODS: safe mode - skipping mod install after a failed load");
         return [];
@@ -169,23 +202,29 @@ window.KMODS = (function () {
     });
   }
 
-  // Synchronously write the preloaded mods into the FS (Module.preRun), then
-  // release the byte copies so they aren't held for the whole session.
+  function writeValueToFS(name, value) {
+    if (value instanceof Uint8Array) {
+      Module.FS.writeFile(MODS_DIR + "/" + name, value);
+      return;
+    }
+    (value.files || []).forEach(function (f) {
+      var full = MODS_DIR + "/" + name + "/" + f.path;
+      var dir = full.slice(0, full.lastIndexOf("/"));
+      try { Module.FS.mkdirTree(dir); } catch (e) {}
+      Module.FS.writeFile(full, f.bytes);
+    });
+  }
+
   function installToFS() {
     if (!window.Module || !Module.FS) return;
     try { Module.FS.mkdirTree(MODS_DIR); } catch (e) {}
     pending.forEach(function (m) {
-      try {
-        Module.FS.writeFile(MODS_DIR + "/" + m.name, m.bytes);
-      } catch (e) {
-        console.warn("KMODS: failed to install " + m.name, e);
-      }
+      try { writeValueToFS(m.name, m.value); }
+      catch (e) { console.warn("KMODS: failed to install " + m.name, e); }
     });
     pending = [];
   }
 
-  // Called once the engine is actually running: the boot survived, so the mods
-  // we installed are safe to install again next time.
   function bootSucceeded() { setBootFlag(false); }
 
   // --------------------------------------------------------------- add/del --
@@ -193,49 +232,96 @@ window.KMODS = (function () {
     return entries.reduce(function (a, m) { return a + (m.size || 0); }, 0);
   }
 
-  function addZip(file) {
-    var name = file.name;
-    if (!/\.(zip|love)$/i.test(name)) {
-      setStatus("Not a .zip mod: " + name, true);
+  function store(name, value, kind) {
+    var size = sizeOf(value);
+    if (size > MAX_INSTALL_BYTES) {
+      setStatus('"' + name + '" unpacks to ' + mb(size) + " - too big for a browser (limit " +
+                mb(MAX_INSTALL_BYTES) + ").", true);
       return Promise.resolve(false);
     }
-    if (/\.love$/i.test(name)) name = name.replace(/\.love$/i, ".zip");
+    if (totalStored() + size > MAX_TOTAL_BYTES) {
+      setStatus("Not enough room: mods already total " + mb(totalStored()) + " (limit " +
+                mb(MAX_TOTAL_BYTES) + "). Remove one first.", true);
+      return Promise.resolve(false);
+    }
+    return tx("readwrite", function (s) { s.put(value, name); }).then(function () {
+      try {
+        Module.FS.mkdirTree(MODS_DIR);
+        writeValueToFS(name, value);
+      } catch (e) {
+        setStatus("Could not install " + name + ": " + e.message, true);
+        return false;
+      }
+      entries = entries.filter(function (m) { return m.name !== name; });
+      entries.push({ name: name, size: size, kind: kind });
+      if (window.KNET && KNET.push) KNET.push("mod_added", { name: name });
+      renderList();
+      return true;
+    });
+  }
 
-    if (file.size > MAX_BYTES) {
-      setStatus('"' + file.name + '" is ' + mb(file.size) + " - too big to load in a " +
-                "browser (limit " + mb(MAX_BYTES) + "). Full game downloads won't work; " +
-                "add just the mod folder.", true);
+  function extractFolder(bytes, list, folder) {
+    var wanted = list.filter(function (e) {
+      return e.name.indexOf(folder.prefix) === 0 && !/\/$/.test(e.name);
+    });
+    var files = [];
+    return wanted.reduce(function (p, e) {
+      return p.then(function () {
+        return inflateEntry(bytes, e).then(function (data) {
+          files.push({ path: e.name.slice(folder.prefix.length), bytes: data });
+        }).catch(function (err) {
+          console.warn("KMODS: skipping " + e.name + ": " + err.message);
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      return { files: files, __folder: true };
+    });
+  }
+
+  function addZip(file) {
+    var fname = file.name;
+    if (!/\.(zip|love)$/i.test(fname)) {
+      setStatus("Not a .zip: " + fname, true);
       return Promise.resolve(false);
     }
-    if (totalStored() + file.size > MAX_TOTAL_BYTES) {
-      setStatus("Not enough room: mods total " + mb(totalStored()) + " and the limit is " +
-                mb(MAX_TOTAL_BYTES) + ". Remove one first.", true);
+    if (file.size > MAX_READ_BYTES) {
+      setStatus('"' + fname + '" is ' + mb(file.size) + " - too big to open in a browser.", true);
       return Promise.resolve(false);
     }
-    if (file.size > WARN_BYTES) setStatus("Reading " + mb(file.size) + ", one moment...");
+    setStatus("Reading " + fname + " (" + mb(file.size) + ")...");
 
     return file.arrayBuffer().then(function (buf) {
       var bytes = new Uint8Array(buf);
+      var list = readCentralDirectory(bytes);
+      var plan = planFor(list);
 
-      var problem = whyNotAMod(zipEntries(bytes));
-      if (problem) {
-        setStatus(problem, true);
-        return false;
+      if (plan.kind === "error") { setStatus(plan.why, true); return false; }
+
+      if (plan.kind === "zip") {
+        var zipName = fname.replace(/\.love$/i, ".zip");
+        return store(zipName, bytes, "zip").then(function (ok) {
+          if (ok) setStatus('Added "' + zipName + '" - open Play to find it.');
+          return ok;
+        });
       }
 
-      return tx("readwrite", function (store) { store.put(bytes, name); }).then(function () {
-        try {
-          Module.FS.mkdirTree(MODS_DIR);
-          Module.FS.writeFile(MODS_DIR + "/" + name, bytes);
-        } catch (e) {
-          setStatus("Could not install " + name + ": " + e.message, true);
-          return false;
-        }
-        entries = entries.filter(function (m) { return m.name !== name; });
-        entries.push({ name: name, size: bytes.length });
-        if (window.KNET && KNET.push) KNET.push("mod_added", { name: name });
-        setStatus('Added "' + name + '" (' + mb(bytes.length) + ') - open Play to find it.');
-        renderList();
+      // extract one or more mod folders out of the archive
+      setStatus("Unpacking " + plan.folders.length + " mod(s) from " + fname + "...");
+      var added = [];
+      return plan.folders.reduce(function (p, folder) {
+        return p.then(function () {
+          return extractFolder(bytes, list, folder).then(function (value) {
+            if (!value.files.length) return;
+            return store(folder.name, value, "folder").then(function (ok) {
+              if (ok) added.push(folder.name);
+            });
+          });
+        });
+      }, Promise.resolve()).then(function () {
+        if (!added.length) { setStatus("Couldn't unpack a mod from " + fname + ".", true); return false; }
+        setStatus('Added ' + added.map(function (n) { return '"' + n + '"'; }).join(", ") +
+                  " from " + fname + " - open Play to find " +
+                  (added.length > 1 ? "them." : "it."));
         return true;
       });
     }).catch(function (e) {
@@ -245,9 +331,27 @@ window.KMODS = (function () {
   }
 
   function removeMod(name) {
-    return tx("readwrite", function (store) { store.delete(name); }).then(function () {
-      try { Module.FS.unlink(MODS_DIR + "/" + name); } catch (e) {}
-      entries = entries.filter(function (m) { return m.name !== name; });
+    return tx("readwrite", function (s) { s.delete(name); }).then(function () {
+      var m = entries.filter(function (x) { return x.name === name; })[0];
+      try {
+        if (m && m.kind === "folder") {
+          // recursive delete
+          var walk = function (dir) {
+            (Module.FS.readdir(dir) || []).forEach(function (f) {
+              if (f === "." || f === "..") return;
+              var full = dir + "/" + f;
+              var st = Module.FS.stat(full);
+              if (Module.FS.isDir(st.mode)) { walk(full); try { Module.FS.rmdir(full); } catch (e) {} }
+              else { try { Module.FS.unlink(full); } catch (e) {} }
+            });
+          };
+          walk(MODS_DIR + "/" + name);
+          try { Module.FS.rmdir(MODS_DIR + "/" + name); } catch (e) {}
+        } else {
+          Module.FS.unlink(MODS_DIR + "/" + name);
+        }
+      } catch (e) {}
+      entries = entries.filter(function (x) { return x.name !== name; });
       if (window.KNET && KNET.push) KNET.push("mod_added", { name: name, removed: true });
       setStatus('Removed "' + name + '".');
       renderList();
@@ -255,13 +359,9 @@ window.KMODS = (function () {
   }
 
   function removeAll() {
-    var names = entries.map(function (m) { return m.name; });
-    return names.reduce(function (p, n) {
-      return p.then(function () { return removeMod(n); });
-    }, Promise.resolve()).then(function () {
-      setBootFlag(false);
-      setStatus("All mods removed.");
-    });
+    return entries.map(function (m) { return m.name; })
+      .reduce(function (p, n) { return p.then(function () { return removeMod(n); }); }, Promise.resolve())
+      .then(function () { setBootFlag(false); setStatus("All mods removed."); });
   }
 
   // -------------------------------------------------------------------- UI --
@@ -300,27 +400,26 @@ window.KMODS = (function () {
 
   function initUI() {
     var input = document.getElementById("kmods-file");
+    var handle = function (files) {
+      Array.prototype.slice.call(files || []).reduce(function (p, f) {
+        return p.then(function () { return addZip(f); });
+      }, Promise.resolve());
+    };
     if (input) {
-      input.addEventListener("change", function () {
-        var files = Array.prototype.slice.call(input.files || []);
-        files.reduce(function (p, f) { return p.then(function () { return addZip(f); }); },
-                     Promise.resolve());
-        input.value = "";
-      });
+      input.addEventListener("change", function () { handle(input.files); input.value = ""; });
     }
     window.addEventListener("dragover", function (e) { e.preventDefault(); });
     window.addEventListener("drop", function (e) {
       e.preventDefault();
-      var files = Array.prototype.slice.call((e.dataTransfer && e.dataTransfer.files) || []);
-      if (!files.length) return;
-      files.reduce(function (p, f) { return p.then(function () { return addZip(f); }); },
-                   Promise.resolve());
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) handle(e.dataTransfer.files);
     });
     renderList();
-    if (safeMode()) {
-      setStatus("Your mods were skipped because the last load crashed - the mod " +
-                "was probably too big. Remove it below, then reload.", true);
-      setBootFlag(false); // one-shot: next reload tries again
+    if (crashedLastBoot) {
+      setStatus("Your mods were skipped because the last load crashed. Remove the " +
+                "biggest one below, then reload.", true);
+      setBootFlag(false);
+    } else if (entries.length) {
+      setStatus(entries.length + " mod(s) installed - open Play to choose one.");
     }
   }
 
