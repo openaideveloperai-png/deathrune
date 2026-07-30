@@ -159,7 +159,7 @@ python3 - "$OUT_DIR/index.html" "$BUILD_ID" <<'PYEOF'
 import sys
 p, v = sys.argv[1], sys.argv[2]
 h = open(p).read()
-for name in ["coi-serviceworker.js", "supabase.js", "knet.js", "theme/love.css"]:
+for name in ["coi-serviceworker.js", "supabase.js", "knet.js", "modloader.js", "theme/love.css"]:
     h = h.replace('src="%s"' % name, 'src="%s?v=%s"' % (name, v))
     h = h.replace('href="%s"' % name, 'href="%s?v=%s"' % (name, v))
 h = h.replace('src="game.js"', 'src="game.js?v=%s"' % v)

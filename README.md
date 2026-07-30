@@ -38,9 +38,10 @@ code) or **join** with a friend's code. Rooms run over **Supabase Realtime**
   their chosen soul color.
 - In the dark-world **C menu** there's a new **PARTY** button showing the room
   code (share it to invite people) and everyone connected.
-- Multiplayer **battles** (turn order per player, one soul per player in the
-  bullet phase, host-authoritative attacks) are the next stage and not yet
-  synced -- battles currently run locally per player.
+- **Battles are synced**: touching an enemy pulls the whole room into the same
+  battle, each player takes their turn in order (everyone else sees a
+  "Waiting for ..." banner), and the bullet phase only starts once everyone has
+  acted -- with one soul per player, in their own colour.
 
 ## 📦 Mods
 
