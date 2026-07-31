@@ -66,9 +66,36 @@ if 'Module["FS"]=FS;' not in s:
 print("   FS exported on Module")
 PYEOF
 
+echo ">> Fixing the OpenAL id/object bug in love.js (love.audio.stop/pause crash)"
+python3 - "$OUT_DIR/love.js" <<'PYEOF'
+import sys
+# Emscripten's library_openal.js passes the raw source *id* to AL.setSourceState
+# in alSourcePlayv/alSourcePausev/alSourceStopv, where every other caller passes
+# the source *object*. setSourceState then reads src.bufQueue.length off an
+# integer and throws "Cannot read properties of undefined (reading 'length')",
+# which kills the whole wasm module.
+#
+# LOVE routes love.audio.stop()/pause() (no arguments) through Pool::stop(), which
+# calls alSourceStopv, so *any* global stop crashed the tab -- including the one
+# Kristal does when it loads a mod.
+p = sys.argv[1]
+s = open(p).read()
+old = "AL.setSourceState(GROWABLE_HEAP_I32()[pSourceIds+i*4>>2],"
+new = "AL.setSourceState(AL.currentCtx.sources[GROWABLE_HEAP_I32()[pSourceIds+i*4>>2]],"
+n = s.count(old)
+if n == 0:
+    assert new in s, "alSource*v id/object bug: no call site found to patch"
+    print("   already patched")
+else:
+    assert n == 3, "expected 3 alSource*v call sites, found %d" % n
+    open(p, "w").write(s.replace(old, new))
+    print("   patched %d alSource*v call site(s)" % n)
+PYEOF
+
 echo ">> Installing multiplayer web scripts"
 cp "$HERE/web/supabase.js" "$OUT_DIR/supabase.js"
 cp "$HERE/web/modloader.js" "$OUT_DIR/modloader.js"
+cp "$HERE/web/luafix.js" "$OUT_DIR/luafix.js"
 sed -e "s|__SUPA_URL__|${SUPA_URL:-https://ofnhmnzojewxbuxntntq.supabase.co}|" \
     -e "s|__SUPA_KEY__|${SUPA_KEY:-sb_publishable_EDDPpcBiKAC6CZdfidZonw_a-WBYAau}|" \
     "$HERE/web/knet.js" > "$OUT_DIR/knet.js"
@@ -80,7 +107,7 @@ p = sys.argv[1]
 h = open(p).read()
 needle = '<link rel="stylesheet" type="text/css" href="theme/love.css">'
 scripts = ('<script src="supabase.js"></script>\n    <script src="knet.js"></script>\n'
-           '    <script src="modloader.js"></script>\n    ')
+           '    <script src="luafix.js"></script>\n    <script src="modloader.js"></script>\n    ')
 if 'knet.js' not in h:
     h = h.replace(needle, scripts + needle, 1)
 hook = """
@@ -161,7 +188,7 @@ python3 - "$OUT_DIR/index.html" "$BUILD_ID" <<'PYEOF'
 import sys
 p, v = sys.argv[1], sys.argv[2]
 h = open(p).read()
-for name in ["coi-serviceworker.js", "supabase.js", "knet.js", "modloader.js", "theme/love.css"]:
+for name in ["coi-serviceworker.js", "supabase.js", "knet.js", "luafix.js", "modloader.js", "theme/love.css"]:
     h = h.replace('src="%s"' % name, 'src="%s?v=%s"' % (name, v))
     h = h.replace('href="%s"' % name, 'href="%s?v=%s"' % (name, v))
 h = h.replace('src="game.js"', 'src="game.js?v=%s"' % v)

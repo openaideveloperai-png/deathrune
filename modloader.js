@@ -27,6 +27,8 @@ window.KMODS = (function () {
   var MAX_INSTALL_BYTES = 192 * 1024 * 1024; // largest single mod we'll keep
   var MAX_TOTAL_BYTES = 384 * 1024 * 1024;   // all mods together
   var BOOT_FLAG = "kristal-mods-installing";
+  var LUAFIX_FLAG = "kristal-mods-luafix";   // version of the Lua rewrite applied
+  var LUAFIX_VERSION = "1";
 
   // Folders inside a full engine build that aren't the user's mod.
   var SKIP_MODS = { example: 1, mod_template: 1 };
@@ -125,6 +127,60 @@ window.KMODS = (function () {
     return new Response(stream).arrayBuffer().then(function (buf) { return new Uint8Array(buf); });
   }
 
+  // ---------------------------------------------------------- Lua 5.1 fixup --
+  // The browser runs vanilla Lua 5.1, which has no `goto`/`::labels::`. Mods
+  // built against desktop LOVE (LuaJIT) use them freely, so rewrite them on the
+  // way in -- see luafix.js. Only this browser's copy is touched; the file the
+  // player downloaded is never modified.
+  var utf8 = { dec: null, enc: null };
+  function decode(bytes) {
+    if (!utf8.dec) utf8.dec = new TextDecoder("utf-8");
+    return utf8.dec.decode(bytes);
+  }
+  function encode(text) {
+    if (!utf8.enc) utf8.enc = new TextEncoder();
+    return utf8.enc.encode(text);
+  }
+
+  var luaWarnings = []; // files this couldn't rewrite, surfaced in the UI
+
+  // Rewrites {path, bytes} entries in place; returns how many files changed.
+  function patchLuaFiles(files, label) {
+    if (!window.KLUAFIX) return 0;
+    var fixed = 0, stuck = [];
+    files.forEach(function (f) {
+      if (!/\.lua$/i.test(f.path)) return;
+      var text;
+      try { text = decode(f.bytes); } catch (e) { return; }
+      if (!KLUAFIX.mayNeedFix(text)) return;
+      var r = KLUAFIX.fix(text);
+      if (r.changed) { f.bytes = encode(r.text); fixed++; }
+      if (r.skipped.length) stuck.push(f.path + ": " + r.skipped.join("; "));
+    });
+    if (fixed) console.log("KMODS: rewrote goto/labels in " + fixed + " Lua file(s) of " + label);
+    if (stuck.length) {
+      stuck.forEach(function (s) { luaWarnings.push(label + "/" + s); });
+      console.warn("KMODS: " + stuck.length + " file(s) in " + label +
+                   " use goto in a way that can't be rewritten:\n  " + stuck.slice(0, 10).join("\n  "));
+    }
+    return fixed;
+  }
+
+  // Does this archive contain Lua that the browser's 5.1 can't parse? If so it
+  // has to be unpacked (and rewritten) instead of mounted as a zip.
+  function zipNeedsLuaFix(bytes, list) {
+    if (!window.KLUAFIX || !list) return Promise.resolve(false);
+    var lua = list.filter(function (e) { return /\.lua$/i.test(e.name); });
+    return lua.reduce(function (p, e) {
+      return p.then(function (found) {
+        if (found) return true;
+        return inflateEntry(bytes, e).then(function (d) {
+          return KLUAFIX.mayNeedFix(decode(d));
+        }).catch(function () { return false; });
+      });
+    }, Promise.resolve(false));
+  }
+
   // Which mod folder(s) can we get out of this archive?
   function planFor(list) {
     if (list === null) return { kind: "zip" }; // couldn't inspect; let the engine try
@@ -174,32 +230,79 @@ window.KMODS = (function () {
     return t;
   }
 
+  // One-off pass over mods that were installed before the Lua 5.1 rewrite
+  // existed, so nobody has to re-upload a mod they already added.
+  function migrateStored(list) {
+    var done;
+    try { done = localStorage.getItem(LUAFIX_FLAG) === LUAFIX_VERSION; } catch (e) { done = false; }
+    if (done || !window.KLUAFIX || !list.length) return Promise.resolve(list);
+
+    return list.reduce(function (p, m) {
+      return p.then(function () {
+        var v = m.value;
+        if (v && v.__folder) {
+          if (v.luafix === LUAFIX_VERSION) return;
+          patchLuaFiles(v.files, m.name);
+          v.luafix = LUAFIX_VERSION;
+          return tx("readwrite", function (s) { s.put(v, m.name); });
+        }
+        if (!(v instanceof Uint8Array)) return;
+        var cd = readCentralDirectory(v);
+        if (!cd) return;
+        return zipNeedsLuaFix(v, cd).then(function (needsFix) {
+          if (!needsFix) return;
+          var newName = m.name.replace(/\.(zip|love)$/i, "");
+          return extractFolder(v, cd, { prefix: "", name: newName }).then(function (value) {
+            if (!value.files.length) return;
+            var oldName = m.name;
+            m.name = newName;
+            m.value = value;
+            return tx("readwrite", function (s) { s.delete(oldName); s.put(value, newName); });
+          });
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      try { localStorage.setItem(LUAFIX_FLAG, LUAFIX_VERSION); } catch (e) {}
+      return list;
+    }).catch(function (e) {
+      console.warn("KMODS: could not update stored mods for Lua 5.1:", e);
+      return list;
+    });
+  }
+
   function preload() {
     if (!window.indexedDB) return Promise.resolve([]);
     return idbAll().then(function (list) {
-      entries = (list || []).map(function (m) {
-        return {
-          name: m.name, size: sizeOf(m.value),
-          kind: m.value instanceof Uint8Array ? "zip" : "folder",
-        };
-      });
       crashedLastBoot = safeMode();
       if (crashedLastBoot) {
+        entries = (list || []).map(describe);
         pending = [];
         console.warn("KMODS: safe mode - skipping mod install after a failed load");
         return [];
       }
-      pending = list || [];
-      if (pending.length) {
-        setBootFlag(true);
-        console.log("KMODS: installing " + pending.length + " stored mod(s)");
-      }
-      return pending;
+      return migrateStored(list || []).then(function (updated) { return afterPreload(updated); });
     }).catch(function (e) {
       console.warn("KMODS: could not read stored mods:", e);
       entries = []; pending = [];
       return [];
     });
+  }
+
+  function describe(m) {
+    return {
+      name: m.name, size: sizeOf(m.value),
+      kind: m.value instanceof Uint8Array ? "zip" : "folder",
+    };
+  }
+
+  function afterPreload(list) {
+    entries = list.map(describe);
+    pending = list;
+    if (pending.length) {
+      setBootFlag(true);
+      console.log("KMODS: installing " + pending.length + " stored mod(s)");
+    }
+    return pending;
   }
 
   function writeValueToFS(name, value) {
@@ -274,8 +377,17 @@ window.KMODS = (function () {
         });
       });
     }, Promise.resolve()).then(function () {
-      return { files: files, __folder: true };
+      patchLuaFiles(files, folder.name);
+      return { files: files, __folder: true, luafix: LUAFIX_VERSION };
     });
+  }
+
+  // Success message, plus a heads-up if some Lua couldn't be made 5.1-safe.
+  function installedStatus(text) {
+    if (!luaWarnings.length) { setStatus(text); return; }
+    setStatus(text + "  Heads-up: " + luaWarnings.length + " file(s) (e.g. " +
+              luaWarnings[0].split(":")[0] + ") use Lua the browser can't run, so this mod " +
+              "may still fail to load - the console has the details.", true);
   }
 
   function addZip(file) {
@@ -289,6 +401,7 @@ window.KMODS = (function () {
       return Promise.resolve(false);
     }
     setStatus("Reading " + fname + " (" + mb(file.size) + ")...");
+    luaWarnings = [];
 
     return file.arrayBuffer().then(function (buf) {
       var bytes = new Uint8Array(buf);
@@ -298,10 +411,25 @@ window.KMODS = (function () {
       if (plan.kind === "error") { setStatus(plan.why, true); return false; }
 
       if (plan.kind === "zip") {
-        var zipName = fname.replace(/\.love$/i, ".zip");
-        return store(zipName, bytes, "zip").then(function (ok) {
-          if (ok) setStatus('Added "' + zipName + '" - open Play to find it.');
-          return ok;
+        // Kristal can mount the zip as-is, but only if its Lua parses on the
+        // web. If it doesn't, unpack it so the goto rewrite can be applied.
+        return zipNeedsLuaFix(bytes, list).then(function (needsFix) {
+          if (!needsFix) {
+            var zipName = fname.replace(/\.love$/i, ".zip");
+            return store(zipName, bytes, "zip").then(function (ok) {
+              if (ok) installedStatus('Added "' + zipName + '" - open Play to find it.');
+              return ok;
+            });
+          }
+          var modName = fname.replace(/\.(zip|love)$/i, "").replace(/[\\/]/g, "_");
+          setStatus("Unpacking " + fname + " (it uses Lua the browser needs rewritten)...");
+          return extractFolder(bytes, list, { prefix: "", name: modName }).then(function (value) {
+            if (!value.files.length) { setStatus("Couldn't unpack " + fname + ".", true); return false; }
+            return store(modName, value, "folder").then(function (ok) {
+              if (ok) installedStatus('Added "' + modName + '" - open Play to find it.');
+              return ok;
+            });
+          });
         });
       }
 
@@ -319,7 +447,7 @@ window.KMODS = (function () {
         });
       }, Promise.resolve()).then(function () {
         if (!added.length) { setStatus("Couldn't unpack a mod from " + fname + ".", true); return false; }
-        setStatus('Added ' + added.map(function (n) { return '"' + n + '"'; }).join(", ") +
+        installedStatus('Added ' + added.map(function (n) { return '"' + n + '"'; }).join(", ") +
                   " from " + fname + " - open Play to find " +
                   (added.length > 1 ? "them." : "it."));
         return true;

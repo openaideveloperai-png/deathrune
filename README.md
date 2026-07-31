@@ -75,6 +75,15 @@ Unpacking uses the browser's built-in `DecompressionStream`, so there's no zip
 library shipped. If a boot ever dies while installing mods, the next load skips
 them and says so, instead of crash-looping.
 
+**Mods written for LuaJIT are rewritten on the way in.** Most mods use `goto
+continue` loops, which desktop LÖVE accepts and the browser's Lua 5.1 cannot
+parse (`'=' expected near 'continue'`). `luafix.js` converts them to the
+equivalent `repeat … until true` form as the mod is installed — see
+[Bridging LuaJIT → Lua 5.1](#3-bridging-luajit--lua-51). Only the copy in your
+browser is touched; the file you downloaded is never modified. A mod that uses
+`goto` in a way that can't be proven equivalent is left alone and named in the
+status line rather than silently changed.
+
 **Mods work online too:** in the lobby the host presses ENTER and picks any
 installed project, and everyone in the room loads that same project and save
 slot. Players who don't have that mod get told which one they're missing --
@@ -87,6 +96,8 @@ build/                  Tooling that compiles Kristal's source into the web app
   build_web.sh            One command: package .love + compile with love.js + add coi
   patch_kristal.py        Applies the minimal web-compatibility source patches
   webcompat.lua           Runtime shim (ffi / bit / package.searchpath / a love.js bug workaround)
+  web/luafix.js           Rewrites Lua 5.2 `goto` loops in uploaded mods to 5.1
+  web/modloader.js        Installs mods from a .zip / .love / full game download
   coi-serviceworker.js    Enables SharedArrayBuffer on GitHub Pages (see below)
 .github/workflows/deploy.yml   Builds Kristal (pinned commit) and deploys to Pages
 ```
@@ -130,12 +141,13 @@ the web, and `webcompat.lua` detects LuaJIT and disables itself there.
 | `ffi` module missing | `discordrpc.lua`, `https.lua` (native Discord/HTTPS libs, impossible in a browser anyway) | `webcompat.lua` preloads a stub `ffi` whose `load()` returns nil, so both modules cleanly report the feature unavailable |
 | `bit` library missing | `tiledutils.lua` (`bit.band` for Tiled tile-flip flags) | `webcompat.lua` provides a pure-Lua `bit` implementation |
 | `package.searchpath` missing (Lua 5.2+) | `hotswapper.lua` | `webcompat.lua` provides the standard implementation |
-| `goto` / `::labels::` (Lua 5.2+) rejected by the 5.1 parser | 6 `goto continue` loops | rewritten to the equivalent `repeat … until true` idiom |
+| `goto` / `::labels::` (Lua 5.2+) rejected by the 5.1 parser | 6 `goto continue` loops in the engine, and most mods | rewritten to the equivalent `repeat … until true` idiom — in the engine at build time (`patch_kristal.py`), in mods at install time (`luafix.js`) |
 | `love.filesystem.getRealDirectory()` **hangs forever** on a missing path (a love.js bug) | `discordrpc.lua`, `https.lua` look up `lib/` which never exists on the web | `webcompat.lua` guards it: missing paths (checked with the safe `getInfo`) return nil instead of hanging |
 | `Channel:demand()` **never wakes** across love.js pthreads (`pop()` works) | the asset **load thread** blocks on `demand()`, so loading never starts | the worker loops are rewritten to poll with `pop()` + a short `sleep()` |
+| `alSourceStopv` / `alSourcePausev` / `alSourcePlayv` pass a source **id** where Emscripten's OpenAL expects the source **object**, throwing `Cannot read properties of undefined (reading 'length')` and killing the wasm module | `love.audio.stop()` and `love.audio.pause()` (no arguments) go through these, so **loading a mod crashed the tab** — as did Kristal's own error screen | `build_web.sh` patches the three call sites in `love.js` to look the source up first, exactly like every other caller does |
 
-The last two were the difference between a permanently-frozen loading screen and
-a working game.
+The last three were the difference between a permanently-frozen loading screen,
+a tab that died on every mod, and a working game.
 
 ## Reproducing the build
 
